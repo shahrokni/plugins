@@ -12,19 +12,29 @@
 // limitations under the License.
 
 import { produce } from 'immer';
+import { parseDurationString } from '@perses-dev/core';
 import {
   DatasourceSelect,
   DatasourceSelectProps,
+  replaceVariables,
+  useAllVariableValues,
   useDatasource,
   useDatasourceClient,
   useDatasourceSelectValueToSelector,
+  useSuggestedStepMs,
+  useTimeRange,
 } from '@perses-dev/plugin-system';
 import { useId } from '@perses-dev/components';
 import { FormControl, Stack, TextField } from '@mui/material';
-import { ReactElement } from 'react';
+import { ReactElement, useContext, useMemo } from 'react';
+import { milliseconds } from 'date-fns';
+import { PanelEditorContext } from '@perses-dev/dashboards';
 import {
   DEFAULT_PROM,
   DurationString,
+  getDurationStringSeconds,
+  getPrometheusTimeRange,
+  getRangeStep,
   isDefaultPromSelector,
   isPrometheusDatasourceSelector,
   PROM_DATASOURCE_KIND,
@@ -39,7 +49,6 @@ import {
   useFormatState,
   useMinStepState,
 } from './query-editor-model';
-
 /**
  * The options editor component for editing a PrometheusTimeSeriesQuery's spec.
  */
@@ -91,6 +100,45 @@ export function PrometheusTimeSeriesQueryEditor(props: PrometheusTimeSeriesQuery
     throw new Error('Got unexpected non-Prometheus datasource selector');
   };
 
+  const variableState = useAllVariableValues();
+  const { absoluteTimeRange } = useTimeRange();
+  const panelEditorContext = useContext(PanelEditorContext);
+  const suggestedStepMs = useSuggestedStepMs(panelEditorContext?.preview.previewPanelWidth);
+
+  const minStepMs = useMemo(() => {
+    /* Try catch is necessary, because when the minStep value is being typed, it will be valid when the duration unit is added. Example: 2m = 2 + m */
+    try {
+      const datasourceScrapeInterval = Math.trunc(
+        milliseconds(
+          parseDurationString(
+            (datasourceResource?.plugin.spec as PrometheusDatasourceSpec)?.scrapeInterval ?? DEFAULT_SCRAPE_INTERVAL
+          )
+        ) / 1000
+      );
+
+      return (
+        (getDurationStringSeconds(replaceVariables(minStepPlaceholder as string, variableState) as DurationString) ??
+          datasourceScrapeInterval) * 1000
+      );
+    } catch {
+      return undefined;
+    }
+  }, [variableState, minStepPlaceholder, datasourceResource?.plugin.spec]);
+
+  const intervalMs = useMemo(() => {
+    const minStepSeconds = (minStepMs ?? 0) / 1000;
+    return getRangeStep(getPrometheusTimeRange(absoluteTimeRange), minStepSeconds, undefined, suggestedStepMs) * 1000;
+  }, [absoluteTimeRange, minStepMs, suggestedStepMs]);
+
+  const treeViewMetadata = useMemo(() => {
+    return minStepMs && intervalMs
+      ? {
+          minStepMs,
+          intervalMs,
+        }
+      : undefined;
+  }, [minStepMs, intervalMs]);
+
   return (
     <Stack spacing={2}>
       <FormControl margin="dense" fullWidth={false}>
@@ -111,6 +159,7 @@ export function PrometheusTimeSeriesQueryEditor(props: PrometheusTimeSeriesQuery
         onChange={handleQueryChange}
         onBlur={handleQueryBlur}
         isReadOnly={isReadonly}
+        treeViewMetadata={treeViewMetadata}
       />
       <Stack direction="row" spacing={2}>
         <TextField
